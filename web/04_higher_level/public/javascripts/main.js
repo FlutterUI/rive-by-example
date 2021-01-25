@@ -4,22 +4,25 @@
 
 (function () {
 
+        // Handy debugging function to print contents of js object; for
+        // debugging purposes only
+        function printProps(obj) {
+            var propValue;
+            for (var propName in obj) {
+                propValue = obj[propName]
+                console.log(propName, propValue);
+            }
+        }
+
     // Loop enum values
     const loopValues = { 'oneShot': 0, 'loop': 1, 'pingPong': 2 };
 
-    // Handy debugging function to print contents of js object
-    function printProps(obj) {
-        var propValue;
-        for (var propName in obj) {
-            propValue = obj[propName]
-            console.log(propName, propValue);
-        }
-    }
+    /*
+     * RiveAnimation constructor
+     */
 
-    // Craates a new RiveAnimation controller; don't use this directly, use
-    // RiveAnimation.init() instead
     var RiveAnimation = function ({
-        src, artboard, animation, canvas, autoplay,
+        src, artboard, animations, canvas, autoplay,
         onload, onloaderror, onplay, onplayerror, onloop
     }) {
         const self = this;
@@ -28,14 +31,33 @@
             console.error('Rive source file is required.');
             return;
         }
-        self._artboard = artboard;
-        self._animation = animation;
+
+        // Name of the artboard. RiveAnimation operates on only one artboard. If
+        // you want to have multiple artboards, use multiple RiveAnimations.
+        self._artboardName = artboard;
+
+        // List of animations that should be played.
+        // TODO: mixing needs to be added in here.
+        self._animations = animations;
         self._canvas = canvas;
         self._autoplay = autoplay;
 
+        // The Rive Wasm runtime
+        self._rive = null;
+        // The instantiated artboard
+        self._artboard = null;
+        // The canvas context
+        self._ctx = null;
+        // Rive renderer
+        self._renderer
+
+
+        // Tracks when the Rive file is successfullyt loaded and the Wasm
+        // runtime is initialized.
         self._loaded = false;
 
-        // Queue of actions to take
+        // Queue of actions to take. Actions are queued if they're called before
+        // RiveAnimation is initialized.
         self._queue = [];
 
         // Set up the event listeners
@@ -72,11 +94,12 @@
             console.error('Unable to load Rive Wasm bundle');
             throw e;
         });
-
-        // return self;
     };
 
-    // RiveAnimation api
+    /*
+     * RiveAnimation api
+     */
+
     RiveAnimation.prototype = {
 
         /*
@@ -123,6 +146,26 @@
                 console.error('Unable to load Rive file: ' + src);
                 throw e;
             });
+        },
+
+        _initializePlayback: function () {
+            const self = this;
+
+            // Get the artboard that contains the animations you want to play.
+            // You animate the artboard, using animations it contains.
+            self._artboard = self._artboardName ?
+                self._file.artboard(self._artboardName) :
+                self._file.defaultArtboard();
+
+            // Check that the artboard has at least 1 animation
+            if (self._artboard.animationCount() < 1) {
+                self._emit('loaderror', 'Artboard has no animations');
+                throw 'Artboard has no animations';
+            }
+
+            // Get the canvas where you want to render the animation and create a renderer
+            self._ctx = self._canvas.getContext('2d');
+            self._renderer = new self._rive.CanvasRenderer(self._ctx);
         },
 
         /*
@@ -199,17 +242,17 @@
                 return;
             }
 
-            // Get the artboard that contains the animations you want to play.
-            // You animate the artboard, using the animations it contains.
-            const artboard = self._artboard ? self._file.artboard(self._artboard) : self._file.defaultArtboard();
+            self._initializePlayback();
 
-            // Get an animation and instance it
-            const animation = artboard.animation(self._animation);
+            // Get the animation and instance them
+            var animation;
+            if (!self.animations) {
+                // No animations given, use the first one
+                animation = self._artboard.animationAt(0);
+            } else {
+                animation = self._artboard.animation(self._animations);
+            }
             const instance = new self._rive.LinearAnimationInstance(animation);
-
-            // Get the canvas where you want to render the animation and create a renderer
-            const ctx = self._canvas.getContext('2d');
-            const renderer = new self._rive.CanvasRenderer(ctx);
 
             // Track the last time the loop was performed
             let lastTime = 0;
@@ -240,23 +283,23 @@
                 // Apply the animation to the artboard. The reason of this is that
                 // multiple animations may be applied to an artboard, which will
                 // then mix those animations together.
-                instance.apply(artboard, 1.0);
+                instance.apply(self._artboard, 1.0);
                 // Once the animations have been applied to the artboard, advance it
                 // by the elapsed time.
-                artboard.advance(elapsedTime);
+                self._artboard.advance(elapsedTime);
 
                 // Clear the current frame of the canvas
-                ctx.clearRect(0, 0, self._canvas.width, self._canvas.height);
+                self._ctx.clearRect(0, 0, self._canvas.width, self._canvas.height);
                 // Render the frame in the canvas
-                ctx.save();
-                renderer.align(self._rive.Fit.contain, self._rive.Alignment.center, {
+                self._ctx.save();
+                self._renderer.align(self._rive.Fit.contain, self._rive.Alignment.center, {
                     minX: 0,
                     minY: 0,
                     maxX: self._canvas.width,
                     maxY: self._canvas.height
-                }, artboard.bounds);
-                artboard.draw(renderer);
-                ctx.restore();
+                }, self._artboard.bounds);
+                self._artboard.draw(self._renderer);
+                self._ctx.restore();
 
                 // Emit if the animation looped
                 switch (animation.loopValue) {
@@ -299,23 +342,23 @@
     // Test/example code
 
     var anim = new RiveAnimation({
-        // src: '/animations/marty_0_6.riv',
-        src: '/animations/pingpong.riv',
-        animation: 'Animation1',
+        src: '/animations/truck_0_6.riv',
+        // src: '/animations/pingpong.riv',
+        // animations: 'idle',
         canvas: document.getElementById('riveCanvas'),
-        // autoplay: true,
-        onload: (msg) => { console.log(msg); },
-        onloaderror: (msg) => { console.error(msg); },
-        onplay: (msg) => { console.log(msg); },
-        onloop: (msg) => { console.log(msg + ' animation looped'); }
+        autoplay: true,
+        // onload: (msg) => { console.log(msg); },
+        // onloaderror: (msg) => { console.error(msg); },
+        // onplay: (msg) => { console.log(msg); },
+        // onloop: (msg) => { console.log(msg + ' animation looped'); },
     });
 
-    // Will start the animation once the animation is loaded
-    anim.play();
+    // // Will start the animation once the animation is loaded
+    // anim.play();
 
-    // Subscribe to listen to events
-    anim.on('load', () => {
-        console.log('External detected load');
-    });
+    // // // Subscribe to listen to events
+    // anim.on('load', () => {
+    //     console.log('External detected load');
+    // });
 
 })();
