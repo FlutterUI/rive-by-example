@@ -4,15 +4,15 @@
 
 (function () {
 
-        // Handy debugging function to print contents of js object; for
-        // debugging purposes only
-        function printProps(obj) {
-            var propValue;
-            for (var propName in obj) {
-                propValue = obj[propName]
-                console.log(propName, propValue);
-            }
+    // Handy debugging function to print contents of js object; for
+    // debugging purposes only
+    function printProps(obj) {
+        var propValue;
+        for (var propName in obj) {
+            propValue = obj[propName]
+            console.log(propName, propValue);
         }
+    }
 
     // Loop enum values
     const loopValues = { 'oneShot': 0, 'loop': 1, 'pingPong': 2 };
@@ -37,8 +37,15 @@
         self._artboardName = artboard;
 
         // List of animations that should be played.
-        // TODO: mixing needs to be added in here.
-        self._animations = animations;
+        if (!animations) {
+            self._animations = null;
+        } else if (typeof animations === 'string') {
+            self._animations = [animations];
+        } else if (animations.constructor === Array) {
+            self._animations = animations;
+        }
+        
+        
         self._canvas = canvas;
         self._autoplay = autoplay;
 
@@ -245,14 +252,15 @@
             self._initializePlayback();
 
             // Get the animation and instance them
-            var animation;
-            if (!self.animations) {
+            var animations;
+            if (!self._animations) {
                 // No animations given, use the first one
-                animation = self._artboard.animationAt(0);
+                animations = [self._artboard.animationAt(0)];
             } else {
-                animation = self._artboard.animation(self._animations);
+                animations = self._animations.map(name => self._artboard.animation(name));
             }
-            const instance = new self._rive.LinearAnimationInstance(animation);
+
+            const instances = animations.map(a => new self._rive.LinearAnimationInstance(a));
 
             // Track the last time the loop was performed
             let lastTime = 0;
@@ -260,8 +268,9 @@
             // Tracks the animation time for detecting looping
             let lastAnimationTime = 0;
 
-            // Tracks the loop state of an animation
-            var loopCount = 0;
+            // Tracks the loop states of all animations
+            var loopCounts = [];
+            instances.forEach(_ => loopCounts.push(0));
 
             // This is the looping function where the animation frames will be
             // rendered at the correct time interval
@@ -275,15 +284,17 @@
                 lastTime = time;
 
                 // Advance the animation by the elapsed number of seconds
-                instance.advance(elapsedTime);
-                if (instance.didLoop) {
-                    loopCount++;
-                }
+                for (const i in instances) {
+                    instances[i].advance(elapsedTime);
+                    if (instances[i].didLoop) {
+                        loopCounts[i] += 1;
+                    }
+                    // Apply the animation to the artboard. The reason of this is that
+                    // multiple animations may be applied to an artboard, which will
+                    // then mix those animations together.
+                    instances[i].apply(self._artboard, 1.0);
+               }
 
-                // Apply the animation to the artboard. The reason of this is that
-                // multiple animations may be applied to an artboard, which will
-                // then mix those animations together.
-                instance.apply(self._artboard, 1.0);
                 // Once the animations have been applied to the artboard, advance it
                 // by the elapsed time.
                 self._artboard.advance(elapsedTime);
@@ -301,26 +312,28 @@
                 self._artboard.draw(self._renderer);
                 self._ctx.restore();
 
-                // Emit if the animation looped
-                switch (animation.loopValue) {
-                    case loopValues.oneShot:
-                        // Do nothing; this never loops
-                        break;
-                    case loopValues.loop:
-                        if (loopCount) {
-                            self._emit('loop', 'oneShot');
-                            loopCount = 0;
-                        }
-                        break;
-                    case loopValues.pingPong:
-                        // Wasm indicates a loop at each time the animation
-                        // changes direction, so a full loop/lap occurs every
-                        // two didLoops
-                        if (loopCount > 1) {
-                            self._emit('loop', 'pingPong');
-                            loopCount = 0;
-                        }
-                        break;
+                for (var i in animations) {
+                    // Emit if the animation looped
+                    switch (animations[i].loopValue) {
+                        case loopValues.oneShot:
+                            // Do nothing; this never loops
+                            break;
+                        case loopValues.loop:
+                            if (loopCounts[i]) {
+                                self._emit('loop', {name: animations[i].name, loop: 'loop'});
+                                loopCounts[i] = 0;
+                            }
+                            break;
+                        case loopValues.pingPong:
+                            // Wasm indicates a loop at each time the animation
+                            // changes direction, so a full loop/lap occurs every
+                            // two didLoops
+                            if (loopCounts[i] > 1) {
+                                self._emit('loop', {name: animations[i].name, loop: 'pingPong'});
+                                loopCounts[i] = 0;
+                            }
+                            break;
+                    }
                 }
 
                 // Calling requestAnimationFrame will call the draw function again
@@ -344,13 +357,13 @@
     var anim = new RiveAnimation({
         src: '/animations/truck_0_6.riv',
         // src: '/animations/pingpong.riv',
-        // animations: 'idle',
+        animations: ['idle', 'bouncing', 'windshield_wipers'],
         canvas: document.getElementById('riveCanvas'),
         autoplay: true,
         // onload: (msg) => { console.log(msg); },
         // onloaderror: (msg) => { console.error(msg); },
         // onplay: (msg) => { console.log(msg); },
-        // onloop: (msg) => { console.log(msg + ' animation looped'); },
+        onloop: (looped) => { console.log('Loop: ' + looped.name + ': ' + looped.loop); },
     });
 
     // // Will start the animation once the animation is loaded
