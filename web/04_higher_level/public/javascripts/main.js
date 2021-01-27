@@ -4,33 +4,80 @@
 
 (function () {
 
-    // Handy debugging function to print contents of js object; for
-    // debugging purposes only
-    function printProps(obj) {
-        var propValue;
-        for (var propName in obj) {
-            propValue = obj[propName]
-            console.log(propName, propValue);
+    // Rive Wasm bundle
+    var _rive;
+    // Tracks whether the Wasm bundle is loaded
+    var _wasmLoaded = false;
+    // Queued callbacks waiting for Wasm load to complete
+    var _wasmLoadQueue = [];
+
+    // Loads the Wasm bundle
+    var _loadWasm = function (url) {
+        Rive({
+            // Loads Wasm bundle
+            locateFile: (file) => '/wasm/' + file,
+        }).then((rive) => {
+            // Wasm successfully loaded
+            _rive = rive;
+            _processWasmLoadQueue();
+        }).catch((e) => {
+            console.error('Unable to load Wasm module');
+            throw e;
+        });
+    };
+
+    var _processWasmLoadQueue = function() {
+        while (_wasmLoadQueue.length > 0) {
+            _wasmLoadQueue.shift()(_rive);
+        }
+    };
+
+    // Add a listener for Wasm loaded
+    var _onWasmLoaded = function(cb) {
+        if (_rive !== undefined) {
+            // Wasm already loaded, fire immediately
+            console.log('Wasm loaded, fire immediately');
+            cb(_rive);
+        } else {
+            console.log('Waiting for Wasm to load');
+            // Add to the load queue
+            _wasmLoadQueue.push(cb);
         }
     }
 
-    // Loop enum values
-    const loopValues = { 'oneShot': 0, 'loop': 1, 'pingPong': 2 };
+    _loadWasm();
+
+    // Loop types. The index of the type is the value that comes from Wasm
+    const loopTypes = ['oneShot', 'loop', 'pingPong'];
+
+    /*
+     * Loop event constructor
+     */
+    var LoopEvent = function ({animationName, loopValue}) {
+        if (loopValue < 0 || loopValue > loopTypes.length) {
+            console.error('Invalid loop value');
+            return;
+        }
+        this.animationName = animationName;
+        this.loopType = loopValue;
+        this.loopName = loopTypes[loopValue];
+    };
 
     /*
      * RiveAnimation constructor
      */
-
     var RiveAnimation = function ({
         src, artboard, animations, canvas, autoplay,
         onload, onloaderror, onplay, onplayerror, onloop
     }) {
         const self = this;
 
+        // If no source file url specified, it's a bust
         if (!src) {
             console.error('Rive source file is required.');
             return;
         }
+        self._src = src;
 
         // Name of the artboard. RiveAnimation operates on only one artboard. If
         // you want to have multiple artboards, use multiple RiveAnimations.
@@ -59,7 +106,7 @@
         self._renderer
 
 
-        // Tracks when the Rive file is successfullyt loaded and the Wasm
+        // Tracks when the Rive file is successfully loaded and the Wasm
         // runtime is initialized.
         self._loaded = false;
 
@@ -90,17 +137,8 @@
             });
         }
 
-        // Load the Wasm and Rive file
-        var res = self._loadWasm();
-        res.then(() => {
-            return self._loadRiveFile(src).then(() => {
-                self._loaded = true;
-                return self;
-            });
-        }).catch((e) => {
-            console.error('Unable to load Rive Wasm bundle');
-            throw e;
-        });
+        // Wait for Wasm to load
+        _onWasmLoaded(self._wasmLoadEvent.bind(self));
     };
 
     /*
@@ -109,31 +147,19 @@
 
     RiveAnimation.prototype = {
 
-        /*
-         * Loads a Rive file
-         */
-        _loadWasm: function (url) {
+        // Callback when Wasm bundle is loaded
+        _wasmLoadEvent: function (rive) {
             var self = this;
 
-            return Rive({
-                // Loads file
-                locateFile: (file) => '/wasm/' + file,
-            }).then((rive) => {
-                self._rive = rive;
-                return rive;
-            }).catch((e) => {
-                console.error('Unable to load Wasm module');
-                throw e;
-            });
+            self._rive = rive;
+             self._loadRiveFile();
         },
 
-        /*
-         * Loads a Rive file
-         */
-        _loadRiveFile: function (src) {
+        // Loads a Rive file
+        _loadRiveFile: function () {
             var self = this;
 
-            const req = new Request(src);
+            const req = new Request(self._src);
             return fetch(req).then((res) => {
                 return res.arrayBuffer();
             }).then((buf) => {
@@ -144,17 +170,16 @@
                 // Fire the 'load' event and trigger the task queue
                 if (self._file) {
                     self._loaded = true;
-                    self._emit('load', 'File ' + src + ' loaded');
+                    self._emit('load', 'File ' + self._src + ' loaded');
                 }
-
-                return;
             }).catch((e) => {
-                self._emit('loaderror', 'Unable to load ' + src);
-                console.error('Unable to load Rive file: ' + src);
+                self._emit('loaderror', 'Unable to load ' + self._src);
+                console.error('Unable to load Rive file: ' + self._src);
                 throw e;
             });
         },
 
+        // Initializes artboard, animations, etc. prior to playback
         _initializePlayback: function () {
             const self = this;
 
@@ -315,21 +340,27 @@
                 for (var i in animations) {
                     // Emit if the animation looped
                     switch (animations[i].loopValue) {
-                        case loopValues.oneShot:
+                        case 0:
                             // Do nothing; this never loops
                             break;
-                        case loopValues.loop:
+                        case 1:
                             if (loopCounts[i]) {
-                                self._emit('loop', {name: animations[i].name, loop: 'loop'});
+                                self._emit('loop', new LoopEvent({
+                                    animationName: animations[i].name,
+                                    loopValue: animations[i].loopValue
+                                }));
                                 loopCounts[i] = 0;
                             }
                             break;
-                        case loopValues.pingPong:
+                        case 2:
                             // Wasm indicates a loop at each time the animation
                             // changes direction, so a full loop/lap occurs every
                             // two didLoops
                             if (loopCounts[i] > 1) {
-                                self._emit('loop', {name: animations[i].name, loop: 'pingPong'});
+                                self._emit('loop', new LoopEvent({
+                                    animationName: animations[i].name,
+                                    loopValue: animations[i].loopValue
+                                }));
                                 loopCounts[i] = 0;
                             }
                             break;
@@ -352,6 +383,16 @@
 
     };
 
+    // Handy debugging function to print contents of js object; for
+    // debugging purposes only
+    function printProps(obj) {
+        var propValue;
+        for (var propName in obj) {
+            propValue = obj[propName]
+            console.log(propName, propValue);
+        }
+    }
+
     // Test/example code
 
     var anim = new RiveAnimation({
@@ -363,7 +404,7 @@
         // onload: (msg) => { console.log(msg); },
         // onloaderror: (msg) => { console.error(msg); },
         // onplay: (msg) => { console.log(msg); },
-        onloop: (looped) => { console.log('Loop: ' + looped.name + ': ' + looped.loop); },
+        // onloop: (l) => { console.log('Loop: ' + l.animationName + ': ' + l.loopName); },
     });
 
     // // Will start the animation once the animation is loaded
