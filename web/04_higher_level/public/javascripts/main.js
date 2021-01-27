@@ -4,6 +4,8 @@
 
 (function () {
 
+    'use strict';
+
     // Rive Wasm bundle
     var _rive;
     // Tracks whether the Wasm bundle is loaded
@@ -48,6 +50,9 @@
     // Loop types. The index of the type is the value that comes from Wasm
     const loopTypes = ['oneShot', 'loop', 'pingPong'];
 
+    // Playback states
+    const playbackStates = {'play': 0, 'pause': 1, 'stop': 2};
+
     /*
      * Loop event constructor
      */
@@ -66,7 +71,7 @@
      */
     var RiveAnimation = function ({
         src, artboard, animations, canvas, autoplay,
-        onload, onloaderror, onplay, onplayerror, onloop
+        onload, onloaderror, onplay, onpause, onplayerror, onloop
     }) {
         const self = this;
 
@@ -102,10 +107,12 @@
         // Rive renderer
         self._renderer
 
-
         // Tracks when the Rive file is successfully loaded and the Wasm
         // runtime is initialized.
         self._loaded = false;
+
+        // Tracks the playback state
+        self._playback = playbackStates.stop;
 
         // Queue of actions to take. Actions are queued if they're called before
         // RiveAnimation is initialized.
@@ -116,6 +123,8 @@
         self._onloaderror = typeof onloaderror === 'function' ? [{ fn: onloaderror }] : [];
         self._onplay = typeof onplay === 'function' ? [{ fn: onplay }] : [];
         // self._onplayerror = typeof onplayerror === 'function' ? [{ fn: onplayerror }] : [];
+        self._onpause = typeof onpause === 'function' ? [{ fn: onpause }] : [];
+        self._onstop = typeof onstop === 'function' ? [{ fn: onstop }] : [];
         self._onloop = typeof onloop === 'function' ? [{ fn: onloop }] : [];
 
         // Add 'load' task so the queue can be processed correctly on
@@ -313,6 +322,7 @@
 
             // On the first pass, make sure lastTime has a valid value
             if (!self._lastTime) {
+                console.log('No last time');
                 self._lastTime = time;
             }
             // Calculate the elapsed time between frames in seconds
@@ -382,8 +392,12 @@
             // at the correct refresh rate. See
             // https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial/Basic_animations
             // for more details.
-            requestAnimationFrame(self._draw.bind(self));
-    
+            if (self._playback === playbackStates.play) {
+                requestAnimationFrame(self._draw.bind(self));
+            } else if (self._playback === playbackStates.pause) {
+                // Reset the end time so on playback it starts at the correct frame
+                self._lastTime = 0;
+            }
         },
 
         /*
@@ -416,18 +430,40 @@
                 return;
             }
 
-            // Start animating by calling draw on the next refresh cycle.
+            self._playback = playbackStates.play;
+
+            // Starts animating by calling draw on the next refresh cycle.
             requestAnimationFrame(self._draw.bind(self));
 
-            // Emit a play event
-            const msg = 'Playing: ' + self._animationNames.join(', ');
+            // Emits a play event
+            const msg = 'Pausing: ' + self._animationNames.join(', ');
             self._emit('play', msg);
         },
 
         /*
          * Pauses playback
          */
-        pause: function() {},
+        pause: function() {
+            const self = this;
+            self._playback = playbackStates.pause;
+            // Emits a pause event
+            const msg = 'Pausing: ' + self._animationNames.join(', ');
+            self._emit('pause', msg);
+        },
+
+        /*
+         * Stops playback; this will restart the animation states to the first
+         * frame
+         */
+        stop: function() {
+            const self = this;
+
+            self._playback = playbackStates.stop;
+            // TODO: reset the animation instances and artboard
+            // Emits a pause event
+            const msg = 'Stopping: ' + self._animationNames.join(', ');
+            self._emit('stop', msg);
+        },
     };
 
     /*
@@ -443,26 +479,35 @@
         }
     }
 
-    // Test/example code
-
-    var anim = new RiveAnimation({
-        src: '/animations/truck_0_6.riv',
-        // src: '/animations/pingpong.riv',
-        animations: ['idle', 'bouncing', 'windshield_wipers'],
-        canvas: document.getElementById('riveCanvas'),
-        autoplay: true,
-        // onload: (msg) => { console.log(msg); },
-        // onloaderror: (msg) => { console.error(msg); },
-        // onplay: (msg) => { console.log(msg); },
-        // onloop: (l) => { console.log('Loop: ' + l.animationName + ': ' + l.loopName); },
-    });
-
-    // Will start the animation once the animation is loaded
-    // anim.play();
-
-    // Subscribe to listen to events
-    // anim.on('load', () => {
-    //     console.log('External detected load');
-    // });
+    // Add to global in Node.js
+    if (typeof global !== 'undefined') {
+        global.RiveAnimation = RiveAnimation;
+    } else if (typeof window !== 'undefined') {
+        window.RiveAnimation = RiveAnimation;
+    }
 
 })();
+
+// Test/example code
+
+var anim = new RiveAnimation({
+    src: '/animations/truck_0_6.riv',
+    // src: '/animations/pingpong.riv',
+    animations: ['idle', 'bouncing', 'windshield_wipers'],
+    canvas: document.getElementById('riveCanvas'),
+    autoplay: true,
+    // onload: (msg) => { console.log(msg); },
+    // onloaderror: (msg) => { console.error(msg); },
+    // onplay: (msg) => { console.log(msg); },
+    onpause: (msg) => console.log(msg),
+    onstop: (msg) => console.log(msg),
+    // onloop: (l) => { console.log('Loop: ' + l.animationName + ': ' + l.loopName); },
+});
+
+// Will start the animation once the animation is loaded
+// anim.play();
+
+// Subscribe to listen to events
+// anim.on('load', () => {
+//     console.log('External detected load');
+// });
